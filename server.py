@@ -1,26 +1,50 @@
 import socket
 import threading
 
+clients={}
 
-clients=[]
+def broadcast(message, exclude_conn=None):
+    for client_conn in clients:
+        if client_conn != exclude_conn:
+            try:
+                client_conn.sendall(message.encode("utf-8"))
+            except:
+                pass
 
-def client(conn,addr):
+def handle_client(conn, addr):
+    username = ""
+    try:
+        # دریافت نام کاربری از کلاینت
+        data = conn.recv(1024).decode("utf-8").strip()
+        if data.startswith("USERNAME:"):
+            username = data.split(":", 1)[1]
+        else:
+            username = f"User_{addr[1]}"
 
-    clients.append(conn)
-    print('New client : ' ,addr )
+        clients[conn] = username
+        
+        # پیام ورود و به‌روزرسانی تعداد آنلاین‌ها
+        broadcast(f"CHAT:🟢 {username} به چت پیوست.\n", exclude_conn=conn)
+        online_count = str(len(clients))
+        broadcast(f"ONLINE:{online_count}\n")
 
-    while True:
-        data=conn.recv(1024)
-        data=data.decode()
+        while True:
+            data = conn.recv(1024)
+            if not data: break
+            msg = data.decode("utf-8").strip()
+            # ارسال پیام چت با نام فرستنده
+            broadcast(f"CHAT:{username}: {msg}\n", exclude_conn=conn)
 
-        online_users=str(len(clients))
-
-        for client in clients:
-            if client != conn:
-                client.sendall(f"CHAT:{data}\n".encode())
-
-        for client in clients:
-            client.sendall(f"ONLINE:{online_users}\n".encode())
+    except (ConnectionResetError, OSError):
+        pass
+    finally:
+        # مدیریت خروج
+        if conn in clients:
+            username = clients.pop(conn)
+            broadcast(f"CHAT:🔴 {username} از چت خارج شد.\n")
+            online_count = str(len(clients))
+            broadcast(f"ONLINE:{online_count}\n")
+            conn.close()
                 
 
 with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as server:
@@ -30,5 +54,5 @@ with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as server:
 
     while True:
         conn, addr= server.accept()
-        t=threading.Thread(target=client ,args=(conn,addr))
+        t=threading.Thread(target=handle_client ,args=(conn,addr))
         t.start()
