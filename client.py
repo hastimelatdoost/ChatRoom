@@ -43,6 +43,39 @@ client = None
 connection_lock = threading.Lock()
 closing = False
 
+
+# نمایش تعداد کاربران آنلاین
+def update_online_count(count):
+    status.configure(text=f"● {count} کاربر آنلاین", text_color=GREEN)
+
+# لیست کاربران آنلاین (متغیر سراسری)
+online_users_list = []
+
+# تابعی که با کلیک روی تعداد آنلاین‌ها اجرا می‌شود و پنجره لیست را باز می‌کند
+def show_online_users_popup(event=None):
+    popup = ctk.CTkToplevel(window)
+    popup.title("کاربران آنلاین")
+    popup.geometry("250\u00d7300")
+    popup.resizable(False, False)
+    popup.attributes("-topmost", True) # همیشه رو بماند
+
+    title_lbl = ctk.CTkLabel(popup, text="👥 افراد حاضر در چت", font=("Tahoma", 14, "bold"))
+    title_lbl.pack(pady=10)
+
+    # کادر اسکرول‌شونده یا لیست‌باکس برای اسامی
+    scroll_frame = ctk.CTkScrollableFrame(popup, width=220, height=200)
+    scroll_frame.pack(padx=10, pady=5, fill="both", expand=True)
+
+    if not online_users_list:
+        lbl = ctk.CTkLabel(scroll_frame, text="کسی آنلاین نیست", font=("Tahoma", 12))
+        lbl.pack(pady=5)
+    else:
+        for user in online_users_list:
+            user_lbl = ctk.CTkLabel(scroll_frame, text=f"• {user}", font=("Tahoma", 12), anchor="w")
+            user_lbl.pack(fill="x", padx=5, pady=2)
+
+
+
 def get_modern_username():
     temp_root = ctk.CTk()
     temp_root.withdraw()
@@ -122,6 +155,10 @@ status = ctk.CTkLabel(
     text_color=GREEN if connected else RED
 )
 status.pack(side="left", padx=15)
+status.bind("<Button-1>", show_online_users_popup)
+status.configure(cursor="hand2")
+
+
 
 exit_btn = ctk.CTkButton(
     right_container,
@@ -140,10 +177,11 @@ exit_btn.pack(side="left", padx=5)
 chat_area = ctk.CTkScrollableFrame(window, fg_color=CHAT_BACKGROUND, corner_radius=0)
 chat_area.pack(fill="both", expand=True, padx=12, pady=12)
 
+
 # نمایش حباب پیام در چت (اصلاح شده برای نمایش زمان)
 def show_message(message, mine=False, timestamp=""):
     message_row = ctk.CTkFrame(chat_area, fg_color="transparent")
-    message_row.pack(fill="x", padx=8, pady=5)
+    message_row.pack(fill="x", padx=8, pady=4)
 
     bubble_color = MY_MESSAGE if mine else OTHER_MESSAGE
     bubble = ctk.CTkFrame(message_row, fg_color=bubble_color, corner_radius=16)
@@ -158,19 +196,25 @@ def show_message(message, mine=False, timestamp=""):
         wraplength=450,
         justify="left"
     )
-    label.pack(padx=16, pady=(10, 2))
+    # اگر زمان وجود دارد فاصله پایینی کمتری می‌گذاریم تا ساعت نزدیک متن باشد
+    label.pack(padx=16, pady=(10, 2 if timestamp else 10), anchor="w")
 
-    # نمایش زمان در زیر متن پیام (در صورت وجود)
+    # نمایش ساعت دقیق زیر متن پیام
     if timestamp:
         time_label = ctk.CTkLabel(
             bubble,
             text=timestamp,
-            font=("Arial", 10), # سایز کوچکتر
-            text_color=TIME_COLOR,
-            padx=12,
-            pady=(0, 5)
+            font=("Arial", 10),
+            text_color=TIME_COLOR
         )
-        time_label.pack()
+        # انتقال pady و padx به متد pack و تنظیم تراز افقی (anchor)
+        time_label.pack(anchor="e", padx=12, pady=(0, 6))
+
+    # اسکرول خودکار به آخرین پیام
+    try:
+        chat_area._parent_canvas.yview_moveto(1.0)
+    except Exception:
+        pass
 
 # به‌روزرسانی متن وضعیت اتصال
 def update_status(is_connected):
@@ -179,9 +223,6 @@ def update_status(is_connected):
     else:
         status.configure(text="● اتصال قطع شد", text_color=RED)
 
-# نمایش تعداد کاربران آنلاین
-def update_online_count(count):
-    status.configure(text=f"● {count} کاربر آنلاین", text_color=GREEN)
 
 # ارسال پیام به سرور
 def send_message(event=None):
@@ -198,13 +239,16 @@ def send_message(event=None):
         with connection_lock:
             client.sendall(data)
         
-        # اضافه کردن زمان فعلی برای پیام خود کلاینت
+        # محاسبه زمان دقیق فعلی (ساعت:دقیقه)
+        # اگر ثانیه را هم می‌خواهید: time.strftime("%H:%M:%S")
         current_time = time.strftime("%H:%M")
+        
         show_message(message, True, current_time)
         message_entry.delete(0, "end")
     except OSError:
         show_message("ارسال پیام ناموفق بود.", False)
         window.after(0, update_status, False)
+
 
 # نوار پایین صفحه برای نوشتن پیام
 bottom = ctk.CTkFrame(window, fg_color=HEADER, corner_radius=0, height=85)
@@ -236,59 +280,67 @@ send_button = ctk.CTkButton(
 )
 send_button.pack(side="right", padx=(0, 18), pady=18)
 
-# دریافت پیام‌ها از سرور به صورت همگام (Thread)
+# دریافت پیام‌ها از سرور به صورت همگام (Thread) با بافر اختصاصی خط‌به‌خط
 def receive_message():
-    global connected
+    global connected,  online_users_list
+    buffer = ""
+
     while connected and not closing:
         try:
             data = client.recv(4096)
             if not data:
                 break
 
-            message = data.decode("utf-8").strip()
+            # اضافه کردن داده‌های دریافتی جدید به بافر
+            buffer += data.decode("utf-8")
 
-            if message.startswith("ONLINE:"):
-                count = message.split(":")[1]
-                window.after(0, update_online_count, count)
-            elif message.startswith("CHAT:"):
-                # تحلیل پیام چت: USER:MESSAGE (TIME) یا USER:MESSAGE
-                # فرض بر این است که سرور فرمت "CHAT:user:msg (time)" یا "CHAT:user:msg" را می‌فرستد
-                try:
-                    # جدا کردن قسمت اول (CHAT) و بقیه
-                    content = message.split(":", 1)[1]
-                    # جدا کردن نام کاربری از متن پیام
-                    user_part, msg_content = content.split(":", 1)
-                    
-                    # استخراج زمان اگر در قالب (HH:MM) باشد
-                    timestamp_str = ""
-                    if "(" in msg_content and ")" in msg_content:
-                        # جدا کردن متن اصلی از زمان
-                        msg_content = msg_content.split("(")[0].strip()
-                        timestamp_str = msg_content.split("(")[-1].replace(")", "") # روش ساده‌تر
-                        # اصلاح دقیق‌تر برای استخراج زمان بین پرانتزها
-                        start_idx = msg_content.find("(")
-                        end_idx = msg_content.find(")")
-                        # اما چون msg_content را split کردیم، باید از متن اصلی زمان را برداریم
-                        # بیایید از روش امن‌تری برای جدا کردن استفاده کنیم:
-                        
-                        # بازسازی مجدد برای دقت بالا:
-                        parts = content.split(":", 1)
-                        user = parts[0]
-                        full_msg = parts[1]
-                        if "(" in full_msg:
-                            msg_text = full_msg.split("(")[0].strip()
-                            time_text = full_msg.split("(")[1].replace(")", "")
-                            show_message(f"{user}: {msg_text}", False, time_text)
-                        else:
-                            show_message(f"{user}: {full_msg}", False)
+            # پردازش هر پیامی که با \n به پایان رسیده است
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+
+                # ۱. پردازش تعداد آنلاین‌ها
+                                # ۱. پردازش تعداد و لیست آنلاین‌ها (فرمت جدید: ONLINE:count:name1,name2,...)
+                if line.startswith("ONLINE:"):
+                    parts = line.split(":", 2)
+                    count = parts[1]
+                    if len(parts) > 2 and parts[2]:
+                        online_users_list = parts[2].split(",")
                     else:
-                        show_message(f"{user}: {msg_content}", False)
-                except Exception:
-                    # اگر فرمت پیام چت در دیتابیس یا سرور با split مشکل داشت
-                    show_message(message, False)
-            else:
-                # برای پیام‌های معمولی که شامل فرمت چت نیستند
-                show_message(message, False)
+                        online_users_list = []
+                    window.after(0, update_online_count, count)
+
+
+                # ۲. پردازش پیام‌های چت و تاریخچه (CHAT:sender:message (HH:MM))
+                elif line.startswith("CHAT:"):
+                    try:
+                        content = line[5:]  # حذف عبارت CHAT:
+                        user, full_msg = content.split(":", 1)
+
+                        # استخراج زمان از انتهای متن پیام (اگر پرانتز زمان وجود داشته باشد)
+                        if full_msg.endswith(")") and "(" in full_msg:
+                            last_open_paren = full_msg.rfind("(")
+                            msg_text = full_msg[:last_open_paren].strip()
+                            timestamp_str = full_msg[last_open_paren + 1:-1].strip()
+                        else:
+                            msg_text = full_msg.strip()
+                            timestamp_str = ""
+
+                        # اگر پیام از خود ما بود (مثلاً از قبل در دیتابیس بوده یا اکو شده)
+                        is_mine = (user == username)
+                        display_text = msg_text if is_mine else f"{user}: {msg_text}"
+
+                        window.after(0, show_message, display_text, is_mine, timestamp_str)
+
+                    except Exception as err:
+                        # در صورت بروز هرگونه خطای فرمت‌بندی در خط
+                        window.after(0, show_message, line, False, "")
+
+                # ۳. پیام‌های سیستمی یا اطلاع‌رسانی معمولی
+                else:
+                    window.after(0, show_message, line, False, "")
 
         except OSError:
             break
